@@ -14,8 +14,13 @@ class StreamRequestException(Exception):
 
 
 def debug_print(s, required_verbosity):
+    
     if config.verbosity >= required_verbosity:
         print(s)
+        
+        if config.file_output:
+            with open("output.txt", "a") as f:
+                f.write(s + '\n')
         
         
         
@@ -229,7 +234,7 @@ if __name__ == '__main__':
         twitch.check_streams()
         hitbox.check_streams()
         
-        debug_print(datetime.datetime.now(), 2)
+        debug_print(str(datetime.datetime.now()), 2)
         debug_print('', 1)  # Empty line
         time.sleep(config.sleep_seconds)
     
