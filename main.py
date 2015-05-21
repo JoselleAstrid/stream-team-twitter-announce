@@ -1,7 +1,8 @@
 import datetime
 import time
 
-import requests    # Must get this from PyPI
+import requests    # Must install this Python package
+import tweepy    # Must install this Python package
 
 import config
 import windows_cmd_support
@@ -26,9 +27,10 @@ def debug_print(s, required_verbosity):
         
 class Site(object):
     
-    def __init__(self, site_name, channel_link_format):
+    def __init__(self, site_name, channel_link_format, twitter_api):
         
         self.channel_link_format = channel_link_format
+        self.twitter_api = twitter_api
         
         self.games_by_onsite_name = dict(
             [(g[site_name], g) for g in config.games
@@ -52,10 +54,17 @@ class Site(object):
             minutes=config.recently_live_expire_minutes
         )
         
-        # Age the recently-live entries, and remove any that are too old
-        for channel_name, d in self.recently_live.iteritems():
+        # Age the recently-live entries, and remove any that are too old.
+        #
+        # Use list() so that we're not using an iterator. We can't remove
+        # items from an iterator while iterating over it.
+        for channel_name, d in list(self.recently_live.items()):
             if time_now - d['last_seen_live'] > recently_live_expire_interval:
-                self.recently_live.pop(name)
+                debug_print(
+                    channel_name
+                    + " is no longer considered recently live", 2
+                )
+                self.recently_live.pop(channel_name)
                 
         try:
             stream_dicts = self.request_streams()
@@ -129,15 +138,21 @@ class Site(object):
                         channel_name=channel_name
                     )
                 )
+            if config.use_twitter:
+                # 'status' is required as a named argument due to this:
+                # https://github.com/tweepy/tweepy/issues/554
+                self.twitter_api.update_status(status=announce_text)
             debug_print(announce_text, 1)
             
             
             
 class Twitch(Site):
     
-    def __init__(self):
+    def __init__(self, twitter_api):
         
-        super(Twitch, self).__init__('twitch', 'twitch.tv/{channel_name}')
+        super(Twitch, self).__init__(
+            'twitch', 'twitch.tv/{channel_name}', twitter_api
+        )
         
     def request_streams(self):
         
@@ -183,9 +198,11 @@ class Twitch(Site):
             
 class Hitbox(Site):
     
-    def __init__(self):
+    def __init__(self, twitter_api):
         
-        super(Hitbox, self).__init__('hitbox', 'hitbox.tv/{channel_name}')
+        super(Hitbox, self).__init__(
+            'hitbox', 'hitbox.tv/{channel_name}', twitter_api
+        )
         
     def request_streams(self):
     
@@ -226,9 +243,19 @@ if __name__ == '__main__':
     
     if config.support_windows_command_line:
         windows_cmd_support.add_support()
+        
+    twitter_api = None
+    if config.use_twitter:
+        auth = tweepy.OAuthHandler(
+            config.twitter_consumer_key, config.twitter_consumer_secret
+        )
+        auth.set_access_token(
+            config.twitter_access_token, config.twitter_access_secret
+        )
+        twitter_api = tweepy.API(auth)
     
-    twitch = Twitch()
-    hitbox = Hitbox()
+    twitch = Twitch(twitter_api)
+    hitbox = Hitbox(twitter_api)
     
     while True:
         twitch.check_streams()
