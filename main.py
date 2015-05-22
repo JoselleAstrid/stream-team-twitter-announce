@@ -24,7 +24,7 @@ def debug_print(s, required_verbosity):
         
         
         
-class Site(object):
+class Site():
     
     def __init__(self, site_name, channel_link_format, twitter_api):
         
