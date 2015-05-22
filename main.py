@@ -5,7 +5,6 @@ import requests    # Must install this Python package
 import tweepy    # Must install this Python package
 
 import config
-import windows_cmd_support
 
 
 
@@ -150,7 +149,7 @@ class Twitch(Site):
     
     def __init__(self, twitter_api):
         
-        super(Twitch, self).__init__(
+        super().__init__(
             'twitch', 'twitch.tv/{channel_name}', twitter_api
         )
         
@@ -200,7 +199,7 @@ class Hitbox(Site):
     
     def __init__(self, twitter_api):
         
-        super(Hitbox, self).__init__(
+        super().__init__(
             'hitbox', 'hitbox.tv/{channel_name}', twitter_api
         )
         
@@ -240,9 +239,6 @@ class Hitbox(Site):
 
 
 if __name__ == '__main__':
-    
-    if config.support_windows_command_line:
-        windows_cmd_support.add_support()
         
     twitter_api = None
     if config.use_twitter:
