@@ -1,5 +1,5 @@
 import datetime
-import time
+import pickle
 
 import requests    # Must install this Python package
 import tweepy    # Must install this Python package
@@ -21,15 +21,41 @@ def debug_print(s, required_verbosity):
         if config.file_output:
             with open("output.txt", "a") as f:
                 f.write(s + '\n')
+                
+                
+                
+class Twitter():
+    
+    def __init__(self):
+        self.completed_auth = False
         
+    def auth(self):
+        auth = tweepy.OAuthHandler(
+            config.twitter_consumer_key, config.twitter_consumer_secret
+        )
+        auth.set_access_token(
+            config.twitter_access_token, config.twitter_access_secret
+        )
+        self.twitter_api = tweepy.API(auth)
+        self.completed_auth = True
+        
+    def tweet(self, text):
+        if not self.completed_auth:
+            self.auth()
+        self.twitter_api.update_status(status=text)
+    
         
         
 class Site():
     
-    def __init__(self, site_name, channel_link_format, twitter_api):
+    twitter = None
+    time_now = None
+    recently_checked = None
+    
+    def __init__(self, site_name, channel_link_format, recently_live):
         
         self.channel_link_format = channel_link_format
-        self.twitter_api = twitter_api
+        self.recently_live = recently_live
         
         self.games_by_onsite_name = dict(
             [(g[site_name], g) for g in config.games
@@ -39,16 +65,9 @@ class Site():
             [(s[site_name].lower(), s) for s in config.streamers
             if (site_name in s)]
         )
-        self.recently_live = dict()
-        self.first_check = True
 
     def check_streams(self):
-                
-        first_check = self.first_check
-        # Be sure to set this before any possible return statement.
-        self.first_check = False
         
-        time_now = datetime.datetime.utcnow()
         recently_live_expire_interval = datetime.timedelta(
             minutes=config.recently_live_expire_minutes
         )
@@ -58,7 +77,7 @@ class Site():
         # Use list() so that we're not using an iterator. We can't remove
         # items from an iterator while iterating over it.
         for channel_name, d in list(self.recently_live.items()):
-            if time_now - d['last_seen_live'] > recently_live_expire_interval:
+            if self.time_now - d['last_seen_live'] > recently_live_expire_interval:
                 debug_print(
                     channel_name
                     + " is no longer considered recently live", 2
@@ -69,7 +88,6 @@ class Site():
             stream_dicts = self.request_streams()
         except StreamRequestException:
             # Web request failed (and we were able to catch it).
-            # Just try again at the next polling interval.
             return
         
         for d in stream_dicts:
@@ -95,7 +113,7 @@ class Site():
                     
             # Update recently-live status.
             self.recently_live[channel_name] = dict(
-                last_seen_live = time_now,
+                last_seen_live = self.time_now,
                 game_name = game_name,
             )
             
@@ -105,7 +123,7 @@ class Site():
                 )
                 continue
                 
-            if first_check and not config.tweet_streams_seen_on_startup:
+            if (not self.recently_checked) and config.tweet_only_if_checked_recently:
                 debug_print(
                     channel_site_display + " is playing " + game_name, 2
                 )
@@ -140,17 +158,17 @@ class Site():
             if config.use_twitter:
                 # 'status' is required as a named argument due to this:
                 # https://github.com/tweepy/tweepy/issues/554
-                self.twitter_api.update_status(status=announce_text)
+                self.twitter.tweet(announce_text)
             debug_print(announce_text, 1)
             
             
             
 class Twitch(Site):
     
-    def __init__(self, twitter_api):
+    def __init__(self, *args):
         
         super().__init__(
-            'twitch', 'twitch.tv/{channel_name}', twitter_api
+            'twitch', 'twitch.tv/{channel_name}', *args
         )
         
     def request_streams(self):
@@ -197,10 +215,10 @@ class Twitch(Site):
             
 class Hitbox(Site):
     
-    def __init__(self, twitter_api):
+    def __init__(self, *args):
         
         super().__init__(
-            'hitbox', 'hitbox.tv/{channel_name}', twitter_api
+            'hitbox', 'hitbox.tv/{channel_name}', *args
         )
         
     def request_streams(self):
@@ -234,31 +252,58 @@ class Hitbox(Site):
             ))
         
         return stream_dicts
+        
+        
+        
+def run():
+    
+    Site.twitter = None
+    if config.use_twitter:
+        Site.twitter = Twitter()
+        
+    time_now = datetime.datetime.utcnow()
+    Site.time_now = time_now
+        
+    # Read our record of recently live streams
+    try:
+        recently_live = pickle.load(open('recently_live.pickle', 'rb'))
+    except IOError:
+        # No recently-live record yet; initialize one
+        recently_live = dict(
+            twitch = dict(), hitbox = dict(), time_checked = None
+        )
+        Site.recently_checked = False
+    else:
+        # Read from file was successful
+        time_since_last_check = time_now - recently_live['time_checked']
+        recently_live_expire_interval = datetime.timedelta(
+            minutes=config.recently_live_expire_minutes
+        )
+        Site.recently_checked = time_since_last_check < recently_live_expire_interval
+    
+    # Check the stream sites and tweet / print status as appropriate
+    if config.twitch_team:
+        twitch = Twitch(recently_live['twitch'])
+        twitch.check_streams()
+    if config.hitbox_team:
+        hitbox = Hitbox(recently_live['hitbox'])
+        hitbox.check_streams()
+        
+    # Update our recently-live record
+    recently_live['twitch'] = twitch.recently_live
+    recently_live['hitbox'] = hitbox.recently_live
+    recently_live['time_checked'] = time_now
+    pickle.dump(recently_live, open('recently_live.pickle', 'wb'))
+    
+    # (If verbosity 2) Print a timestamp, and an empty line
+    # so that the output of many runs will display nicely together
+    debug_print(str(time_now) + '\n', 2)
 
 
 
 
 if __name__ == '__main__':
-        
-    twitter_api = None
-    if config.use_twitter:
-        auth = tweepy.OAuthHandler(
-            config.twitter_consumer_key, config.twitter_consumer_secret
-        )
-        auth.set_access_token(
-            config.twitter_access_token, config.twitter_access_secret
-        )
-        twitter_api = tweepy.API(auth)
     
-    twitch = Twitch(twitter_api)
-    hitbox = Hitbox(twitter_api)
-    
-    while True:
-        twitch.check_streams()
-        hitbox.check_streams()
-        
-        debug_print(str(datetime.datetime.now()), 2)
-        debug_print('', 1)  # Empty line
-        time.sleep(config.sleep_seconds)
+    run()
     
     
