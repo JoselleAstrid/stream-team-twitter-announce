@@ -1,3 +1,4 @@
+import csv
 import datetime
 import pickle
 
@@ -21,6 +22,24 @@ def debug_print(s, required_verbosity):
         if config.file_output:
             with open("output.txt", "a") as f:
                 f.write(s + '\n')
+                
+                
+                
+def read_csv(filename):
+    with open(filename, encoding='utf-8') as f:
+        reader = csv.reader(f)
+        headers = next(reader)
+        keys = [s.lower() for s in headers]
+        
+        dicts = []
+        for row in reader:
+            d = dict()
+            for i, cell in enumerate(row):
+                if cell != '':
+                    d[keys[i]] = cell
+            dicts.append(d)
+            
+    return dicts
                 
                 
                 
@@ -58,7 +77,7 @@ class Site():
         self.recently_live = recently_live
         
         self.games_by_onsite_name = dict(
-            [(g[site_name], g) for g in config.games
+            [(g[site_name], g) for g in Site.games
             if (site_name in g)]
         )
         self.streamers_by_onsite_name = dict(
@@ -149,7 +168,7 @@ class Site():
             
             announce_text = \
                 "{game} {streamer} is live: {link}".format(
-                    game = game_d['display_name'],
+                    game = game_d['display'],
                     streamer = streamer_display,
                     link = self.channel_link_format.format(
                         channel_name=channel_name
@@ -280,6 +299,9 @@ def run():
             minutes=config.recently_live_expire_minutes
         )
         Site.recently_checked = time_since_last_check < recently_live_expire_interval
+        
+    # Get games
+    Site.games = read_csv(config.games_csv)
     
     # Check the stream sites and tweet / print status as appropriate
     if config.twitch_team:
