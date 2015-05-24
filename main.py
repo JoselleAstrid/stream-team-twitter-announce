@@ -1,5 +1,6 @@
 import csv
 import datetime
+import os
 import pickle
 
 import requests    # Must install this Python package
@@ -10,6 +11,8 @@ import config
 
 
 class StreamRequestException(Exception):
+    pass
+class GoogleDocsRequestException(Exception):
     pass
 
 
@@ -22,6 +25,11 @@ def debug_print(s, required_verbosity):
         if config.file_output:
             with open("output.txt", "a") as f:
                 f.write(s + '\n')
+                
+                
+                
+def utc_to_local(utc_time):
+    return utc_time.replace(tzinfo=datetime.timezone.utc).astimezone(tz=None)
                 
                 
                 
@@ -40,6 +48,115 @@ def read_csv(filename):
             dicts.append(d)
             
     return dicts
+                
+                
+                
+def write_csv(filename, dicts):
+    headers = set()
+    for d in dicts:
+        for key in d.keys():
+            headers.add(key)
+    headers = list(headers)
+    
+    # Without newline='', we get a bunch of empty rows for some reason.
+    with open(filename, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        
+        writer.writeheader()
+        for d in dicts:
+            writer.writerow(d)
+    
+    
+    
+def update_streamers_csv(time_now):
+    
+    if os.path.isfile(config.streamers_csv):
+        csv_last_update = datetime.datetime.utcfromtimestamp(
+            os.path.getmtime(config.streamers_csv)
+        )
+        
+        update_interval = datetime.timedelta(
+            minutes=config.streamers_update_interval_minutes
+        )
+        if time_now - csv_last_update < update_interval:
+            # Already updated the CSV recently, don't bother going online
+            # to update
+            return
+        else:
+            s = (
+                "Time now: {}. Streamers CSV last"
+                " updated: {}. Update interval: {}. Time to check the doc."
+            ).format(
+                utc_to_local(time_now),
+                utc_to_local(csv_last_update),
+                update_interval
+            )
+            debug_print(s, 2)
+    else:
+        csv_last_update = None
+        
+    url = (
+        'https://spreadsheets.google.com/feeds/list/'
+        + config.streamers_googledoc_spreadsheet_key
+        + '/'
+        + config.streamers_googledoc_worksheet_id
+        + '/public/basic?alt=json'
+    )
+    
+    try:
+        response = requests.get(url)
+    except requests.exceptions.RequestException as e:
+        debug_print("[ERROR on Google docs call] " + str(e), 1)
+        raise GoogleDocsRequestException
+        
+    try:
+        response_json = response.json()
+    except ValueError as e:
+        debug_print("[ERROR on Google docs response json() call] " + str(e), 1)
+        raise GoogleDocsRequestException
+    
+    # Example: "2015-05-23T01:59:22.480Z", but we'll ignore the .480Z part.
+    # Milliseconds aren't readily accepted by strftime; it accepts
+    # microseconds, not milliseconds. And we don't need such precision anyway.
+    sheet_update_time_str = response_json['feed']['updated']['$t']
+    sheet_update_time = datetime.datetime.strptime(
+        sheet_update_time_str[:-5], '%Y-%m-%dT%H:%M:%S'
+    )
+    
+    if sheet_update_time < csv_last_update:
+        # The spreadsheet hasn't been updated since the CSV's last update,
+        # so the CSV is still up to date. But update the mtime of the file
+        # so we can remember that we checked.
+        os.utime(config.streamers_csv)
+        
+        s = (
+            "Streamers Google doc last updated: {}. Streamers CSV last"
+            " updated: {} (later). No need to update."
+        ).format(utc_to_local(sheet_update_time), utc_to_local(csv_last_update))
+        debug_print(s, 2)
+        return
+        
+    debug_print("Updating streamers CSV with the Google doc.", 2)
+    
+    dicts = []
+    for row in response_json['feed']['entry']:
+        row_str = row['content']['$t']
+        
+        # row_str is a string containing the contents of the row's cells.
+        # format is: 'header1: cellvalue1, header2: cellvalue2, <etc.>'
+        # - The headers are taken from the first row. The cellvalues include
+        # all rows except for the first one. Also, the headers have been
+        # converted to all-lowercase.
+        # - Everything here ignores the first column of the sheet. So
+        # we can only retrieve data starting from column 2.
+        cell_strs = row_str.split(', ')
+        d = dict()
+        for s in cell_strs:
+            key, value = s.split(': ')
+            d[key] = value
+        dicts.append(d)
+    
+    write_csv(config.streamers_csv, dicts)
                 
                 
                 
@@ -201,13 +318,13 @@ class Twitch(Site):
         try:
             response = requests.get(url)
         except requests.exceptions.RequestException as e:
-            debug_print("[ERROR on Twitch requests.get() call] " + e.strerror, 1)
+            debug_print("[ERROR on Twitch requests.get() call] " + str(e), 1)
             raise StreamRequestException
             
         try:
             response_json = response.json()
         except ValueError as e:
-            debug_print("[ERROR on Twitch json() call] " + e.strerror, 1)
+            debug_print("[ERROR on Twitch json() call] " + str(e), 1)
             raise StreamRequestException
         
         stream_dicts = []
@@ -251,13 +368,13 @@ class Hitbox(Site):
         try:
             response = requests.get(url)
         except requests.exceptions.RequestException as e:
-            debug_print("[ERROR on Hitbox requests.get() call] " + e.strerror, 1)
+            debug_print("[ERROR on Hitbox requests.get() call] " + str(e), 1)
             raise StreamRequestException
             
         try:
             response_json = response.json()
         except ValueError as e:
-            debug_print("[ERROR on Hitbox json() call] " + e.strerror, 1)
+            debug_print("[ERROR on Hitbox json() call] " + str(e), 1)
             raise StreamRequestException
         
         stream_dicts = []
@@ -303,6 +420,22 @@ def run():
     # Get games
     Site.games = read_csv(config.games_csv)
     
+    # Update streamers from Google doc
+    if config.streamers_googledoc_spreadsheet_key:
+        try:
+            update_streamers_csv(time_now)
+        except GoogleDocsRequestException:
+            debug_print("Failed to update the streamers CSV via Google doc.", 1)
+    
+    # Get streamers
+    try:
+        Site.streamers = read_csv(config.streamers_csv)
+    except IOError:
+        debug_print("Couldn't read the streamers CSV file ({}).".format(
+            config.streamers_csv
+        ), 1)
+        return
+    
     # Check the stream sites and tweet / print status as appropriate
     if config.twitch_team:
         twitch = Twitch(recently_live['twitch'])
@@ -319,7 +452,8 @@ def run():
     
     # (If verbosity 2) Print a timestamp, and an empty line
     # so that the output of many runs will display nicely together
-    debug_print(str(time_now) + '\n', 2)
+    local_time_now = utc_to_local(time_now)
+    debug_print('---------- ' + str(local_time_now) + '\n', 2)
 
 
 
